@@ -39,25 +39,36 @@ collapse_model, danger_model = load_models()
 # ────────── функция классификации ──────────
 def classify_video(model, classes, path):
     cap = cv2.VideoCapture(path)
-    if not cap.isOpened(): return None, 0.0
+    if not cap.isOpened():
+        return None, 0.0
+
     votes, fid = np.zeros(len(classes), int), 0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     step_prog = max(total // 100, 1)
-    bar = st.progress(0.)
+    prog = st.progress(0)
+
     while True:
         ok, frame = cap.read()
-        if not ok: break
+        if not ok:
+            break
         if fid % STEP == 0:
-            fr = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), IMG_SIZE)
-            pred = model.predict(np.expand_dims(fr, 0)/255., verbose=0)[0]
+            fr = cv2.resize(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                (IMG_SIZE, IMG_SIZE)            # ← кортеж, а не число!
+            )
+            pred = model.predict(np.expand_dims(fr, 0) / 255., verbose=0)[0]
             votes[np.argmax(pred)] += 1
         if fid % step_prog == 0:
-            bar.progress(min(fid / max(total,1), 1.0))
+            prog.progress(min(fid / max(total, 1), 1.0))
         fid += 1
-    cap.release(); bar.empty()
-    if votes.sum()==0: return None, 0.0
+
+    cap.release()
+    prog.empty()
+    if votes.sum() == 0:
+        return None, 0.0
     idx = votes.argmax()
-    return classes[idx], votes[idx]/votes.sum()
+    return classes[idx], votes[idx] / votes.sum()
+
 
 # ────────── Streamlit UI ──────────
 st.set_page_config("Landslide Detection", "🌋")
