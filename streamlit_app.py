@@ -1,8 +1,3 @@
-# streamlit_app.py  —  версия без libGL
-# -----------------------------------------------------------------------------
-# Если opencv-python не может найти libGL.so, автоматически ставим
-# opencv-python-headless и используем его.
-
 import subprocess, sys, importlib, os, tempfile, numpy as np, tensorflow as tf
 import streamlit as st
 
@@ -11,8 +6,11 @@ def safe_import_cv2():
     try:
         return importlib.import_module("cv2")
     except ImportError:
-        subprocess.check_call([sys.executable, "-m", "pip", "install",
-                               "--quiet", "opencv-python-headless>=4.8.1.78"])
+        # пробуем «headless»-колесо (дружит с контейнерами без libGL)
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install",
+            "--quiet", "opencv-python-headless==4.7.0.72"
+        ])
         return importlib.import_module("cv2")
 
 cv2 = safe_import_cv2()
@@ -22,26 +20,25 @@ IMG_SIZE, STEP = 150, 10
 COLLAPSE_CLASSES = ["No_Landslide", "Rockfall", "Earth_Flow"]
 DANGER_CLASSES   = ["Safe", "Roads_Damaged", "Houses_Damaged"]
 
+# ────────── кэш-загрузка моделей ──────────
 @st.cache_resource(show_spinner=False)
 def load_models():
-    coll, dang = None, None
-    if os.path.exists("collapse_model.h5"):
-        coll = tf.keras.models.load_model("collapse_model.h5", compile=False)
+    coll = tf.keras.models.load_model("collapse_model.h5", compile=False) \
+           if os.path.exists("collapse_model.h5") else None
     if not os.path.exists("danger_model.h5"):
         st.error("Файл **danger_model.h5** не найден. "
-                 "Положите модель в папку приложения и перезапустите.")
+                 "Положите модель в каталог приложения и перезапустите.")
         st.stop()
     dang = tf.keras.models.load_model("danger_model.h5", compile=False)
     return coll, dang
 
 collapse_model, danger_model = load_models()
 
-# ────────── функция классификации ──────────
+# ────────── классификация видео ──────────
 def classify_video(model, classes, path):
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         return None, 0.0
-
     votes, fid = np.zeros(len(classes), int), 0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     step_prog = max(total // 100, 1)
@@ -52,23 +49,28 @@ def classify_video(model, classes, path):
         if not ok:
             break
         if fid % STEP == 0:
-            fr = cv2.resize(
-                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                (IMG_SIZE, IMG_SIZE)            # ← кортеж, а не число!
-            )
+            fr = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                            (IMG_SIZE, IMG_SIZE))
             pred = model.predict(np.expand_dims(fr, 0) / 255., verbose=0)[0]
             votes[np.argmax(pred)] += 1
         if fid % step_prog == 0:
             prog.progress(min(fid / max(total, 1), 1.0))
         fid += 1
 
-    cap.release()
-    prog.empty()
+    cap.release(); prog.empty()
     if votes.sum() == 0:
         return None, 0.0
     idx = votes.argmax()
     return classes[idx], votes[idx] / votes.sum()
 
+# ────────── универсальный rerun ──────────
+def do_rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+    else:
+        st.warning("⚠️ Не удалось выполнить rerun; обновите страницу вручную.")
 
 # ────────── Streamlit UI ──────────
 st.set_page_config("Landslide Detection", "🌋")
@@ -80,7 +82,7 @@ st.write(
     "(Safe / Roads_Damaged / Houses_Damaged)."
 )
 
-video_file = st.file_uploader("Видео-файл", type=["mp4","avi","mov","mkv"])
+video_file = st.file_uploader("Видео-файл", type=["mp4", "avi", "mov", "mkv"])
 
 if video_file:
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
@@ -98,7 +100,7 @@ if video_file:
                     st.error("Не удалось прочитать видео."); os.unlink(tmp.name); st.stop()
                 st.info(f"**Тип обвала:** {collapse_cls}  ({collapse_conf*100:.1f} %)")
 
-            # 2) опасность
+            # 2) уровень опасности
             if (collapse_model is None) or (collapse_cls != "No_Landslide"):
                 danger_cls, danger_conf = classify_video(
                     danger_model, DANGER_CLASSES, tmp.name)
@@ -109,6 +111,6 @@ if video_file:
                 st.success("Обвал не обнаружен — опасность не оценивается.")
 
         os.unlink(tmp.name)
-        st.button("🔄 Новый файл", on_click=lambda: st.experimental_rerun())
+        st.button("🔄 Новый файл", on_click=do_rerun)
 else:
     st.caption("⬆️  Выберите видео для начала.")
